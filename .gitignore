@@ -14,6 +14,7 @@
 # and potentially sensitive data. Use a remote backend for state management.
 terraform.tfstate
 terraform.tfstate.*
+env/dev/terraform.tfvars
 
 # Ignore crash log files
 crash.log
