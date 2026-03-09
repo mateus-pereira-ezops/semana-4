@@ -1,0 +1,36 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+
+# Local .tfvars files
+# Ignore all "*.tfvars" files, but you can include a specific one (e.g., terraform.tfvars)
+# if it contains non-sensitive, shared data (like environment names).
+# If you use a consistent naming convention for environment-specific secrets
+# (e.g., "prod.tfvars"), make sure to list it here.
+# *.tfvars
+# *.tfvars.json
+
+# Ignore the terraform.tfstate file and its backups, as they contain infrastructure state
+# and potentially sensitive data. Use a remote backend for state management.
+terraform.tfstate
+terraform.tfstate.*
+
+# Ignore crash log files
+crash.log
+crash.*.log
+
+# Ignore TF plan files, which can contain sensitive information
+# Comment the line below if you want to commit the plan files.
+# *tfplan*
+
+# Ignore override files, which are usually used for local testing and
+# shouldn't be committed to the main repository.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Optional: Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
