@@ -44,3 +44,12 @@ variable "db_pass" {
   type      = string
   sensitive = true
 }
+
+variable "certificate_arn" {
+  type = string
+}
+
+variable "subdomain" {
+  type    = string
+  default = "mpdesafio4.ezopscloud.co"
+}
