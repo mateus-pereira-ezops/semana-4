@@ -31,8 +31,23 @@ module "ecs" {
   frontend_image = "${module.ecr.repository_urls["frontend"]}:latest"
   backend_image  = "${module.ecr.repository_urls["backend"]}:latest"
 
-  db_endpoint = module.rds.db_endpoint
-  db_host     = module.rds.db_host
-  db_name     = module.rds.db_name
-  db_pass     = var.db_pass
+  db_endpoint     = module.rds.db_endpoint
+  db_host         = module.rds.db_host
+  db_name         = module.rds.db_name
+  db_pass         = var.db_pass
+  certificate_arn = module.acm.certificate_arn
+  subdomain       = "mpdesafio4.ezopscloud.co"
+}
+
+module "route53" {
+  source = "./modules/route53"
+
+  alb_dns     = module.ecs.alb_dns
+  alb_zone_id = module.ecs.alb_zone_id
+}
+
+module "acm" {
+  source         = "./modules/acm"
+  project_name   = var.project_name
+  hosted_zone_id = module.route53.zone_id
 }
