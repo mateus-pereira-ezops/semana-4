@@ -9,23 +9,29 @@ Infraestrutura completa para rodar uma aplicação Next.js + Express.js com banc
 ```
 Internet
     │
-    ▼
-Application Load Balancer (ALB)
+    ▼ (HTTP :80 → redirect 301)
+    ▼ (HTTPS :443)
+Application Load Balancer (ALB) — subnets públicas
     │
     ├── /* ──────────────── ECS Fargate (Frontend - Next.js :3000)
-    │
-    └── /api/* ──────────── ECS Fargate (Backend - Express.js :3001)
-                                │
-                                ▼
-                        RDS PostgreSQL (subnets privadas)
+    │                             │ subnets privadas
+    └── /api, /api/* ────── ECS Fargate (Backend - Express.js :3001)
+                                  │ subnets privadas
+                                  ▼
+                          RDS PostgreSQL (subnets privadas)
+
+subnets privadas → NAT Gateway → Internet (saída apenas)
 ```
 
 ### Componentes
 
 - **VPC** — rede isolada com subnets públicas e privadas em 2 Availability Zones
+- **NAT Gateway** — permite que recursos nas subnets privadas acessem a internet (saída apenas)
 - **ECR** — repositórios Docker para as imagens do frontend e backend
-- **ECS Fargate** — execução dos containers sem gerenciamento de servidores
-- **ALB** — balanceador de carga que roteia tráfego entre frontend e backend
+- **ECS Fargate** — dois services independentes (frontend e backend) nas subnets privadas
+- **ALB** — balanceador de carga nas subnets públicas com HTTPS e redirect HTTP → HTTPS
+- **ACM** — certificado SSL gratuito validado via DNS pelo Route53
+- **Route53** — subdomínio `mpdesafio4.ezopscloud.co` apontando para o ALB
 - **RDS PostgreSQL** — banco de dados nas subnets privadas (sem acesso público)
 - **S3** — armazenamento do remote state do Terraform
 
@@ -44,10 +50,12 @@ Application Load Balancer (ALB)
 │   └── dev/
 │       └── terraform.tfvars  # Valores das variáveis (não commitar senhas)
 └── modules/
-    ├── vpc/                # VPC, subnets, IGW, route tables
+    ├── vpc/                # VPC, subnets, IGW, NAT Gateway, route tables
     ├── ecr/                # Repositórios ECR
-    ├── ecs/                # Cluster, Task Definition, Service, ALB
-    └── rds/                # Instância RDS, subnet group, security group
+    ├── ecs/                # Cluster, Task Definitions, Services, ALB
+    ├── rds/                # Instância RDS, subnet group, security group
+    ├── route53/            # Registro DNS apontando para o ALB
+    └── acm/                # Certificado SSL e validação via DNS
 ```
 
 ---
@@ -58,6 +66,7 @@ Application Load Balancer (ALB)
 - [AWS CLI](https://aws.amazon.com/cli/) configurado com credenciais válidas
 - [Docker](https://www.docker.com/) para build e push das imagens
 - Bucket S3 criado para o remote state
+- Domínio registrado no Route53
 
 ---
 
@@ -76,13 +85,13 @@ db_password  = "SuaSenhaSegura"
 
 ### 2. Variáveis de ambiente esperadas pelo Backend
 
-| Variável   | Descrição                        |
-|------------|----------------------------------|
-| `DB_HOST`  | Endpoint do RDS (sem porta)      |
-| `DB_USER`  | Usuário do banco                 |
-| `DB_PASS`  | Senha do banco                   |
-| `DB_NAME`  | Nome do banco                    |
-| `DB_PORT`  | Porta do banco (padrão: `5432`)  |
+| Variável   | Descrição                          |
+|------------|------------------------------------|
+| `DB_HOST`  | Endpoint do RDS (sem porta)        |
+| `DB_USER`  | Usuário do banco                   |
+| `DB_PASS`  | Senha do banco                     |
+| `DB_NAME`  | Nome do banco                      |
+| `DB_PORT`  | Porta do banco (padrão: `5432`)    |
 | `PORT`     | Porta do servidor (padrão: `3001`) |
 
 ---
@@ -121,7 +130,8 @@ terraform output
 
 Exemplo de output:
 ```
-alb_dns         = "desafio4-alb-xxxxxxxxxx.us-east-2.elb.amazonaws.com"
+alb_dns          = "desafio4-alb-xxxxxxxxxx.us-east-2.elb.amazonaws.com"
+app_url          = "https://mpdesafio4.ezopscloud.co"
 ecr_frontend_url = "xxxxxxxxxxxx.dkr.ecr.us-east-2.amazonaws.com/frontend"
 ecr_backend_url  = "xxxxxxxxxxxx.dkr.ecr.us-east-2.amazonaws.com/backend"
 ```
@@ -158,34 +168,79 @@ docker push <ECR_BACKEND_URL>:latest
 ### 4. Forçar novo deployment no ECS
 
 ```bash
+# Frontend
 aws ecs update-service \
   --cluster desafio4-cluster \
-  --service desafio4-service \
+  --service desafio4-frontend-service \
+  --force-new-deployment \
+  --region us-east-2
+
+# Backend
+aws ecs update-service \
+  --cluster desafio4-cluster \
+  --service desafio4-backend-service \
   --force-new-deployment \
   --region us-east-2
 ```
 
-### 5. Verificar se a task está rodando
+### 5. Verificar se os services estão rodando
 
 ```bash
 aws ecs describe-services \
   --cluster desafio4-cluster \
-  --services desafio4-service \
+  --services desafio4-frontend-service desafio4-backend-service \
   --region us-east-2 \
-  --query "services[0].{running:runningCount,pending:pendingCount,desired:desiredCount}"
+  --query "services[*].{name:serviceName,running:runningCount,desired:desiredCount}"
 ```
 
 ---
 
 ## Testando a Aplicação
 
-Com `running: 1`, acesse:
+### Endpoints gerais
 
 | Endpoint | Descrição |
 |----------|-----------|
-| `http://<ALB_DNS>/` | Frontend (Next.js) |
-| `http://<ALB_DNS>/api/health` | Health check do backend |
-| `http://<ALB_DNS>/api/db-time` | Consulta ao banco de dados |
+| `https://mpdesafio4.ezopscloud.co/` | Frontend (Next.js) |
+| `https://mpdesafio4.ezopscloud.co/api/health` | Health check do backend |
+| `https://mpdesafio4.ezopscloud.co/api/db-time` | Consulta ao banco de dados |
+
+> HTTP redireciona automaticamente para HTTPS via redirect 301.
+
+### CRUD de Tarefas
+
+A tabela `tasks` é criada automaticamente na primeira execução do backend.
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| `POST` | `/api/tasks` | Criar tarefa |
+| `GET` | `/api/tasks` | Listar todas |
+| `GET` | `/api/tasks/:id` | Buscar uma |
+| `PUT` | `/api/tasks/:id` | Atualizar |
+| `DELETE` | `/api/tasks/:id` | Deletar |
+
+**Exemplos:**
+
+```bash
+# Criar
+curl -X POST https://mpdesafio4.ezopscloud.co/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Minha tarefa"}'
+
+# Listar
+curl https://mpdesafio4.ezopscloud.co/api/tasks
+
+# Buscar
+curl https://mpdesafio4.ezopscloud.co/api/tasks/1
+
+# Atualizar
+curl -X PUT https://mpdesafio4.ezopscloud.co/api/tasks/1 \
+  -H "Content-Type: application/json" \
+  -d '{"done": true}'
+
+# Deletar
+curl -X DELETE https://mpdesafio4.ezopscloud.co/api/tasks/1
+```
 
 ---
 
