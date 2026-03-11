@@ -19,3 +19,7 @@ output "db_host" {
   value     = module.rds.db_host
   sensitive = true
 }
+
+output "app_url" {
+  value = module.route53.app_url
+}
