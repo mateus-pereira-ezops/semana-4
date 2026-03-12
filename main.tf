@@ -51,3 +51,17 @@ module "acm" {
   project_name   = var.project_name
   hosted_zone_id = module.route53.zone_id
 }
+
+module "cloudfront" {
+  source = "./modules/cloudfront"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  project_name   = var.project_name
+  subdomain      = "mpdesafio4.ezopscloud.co"
+  hosted_zone_id = module.route53.zone_id
+  alb_dns        = module.ecs.alb_dns
+}
