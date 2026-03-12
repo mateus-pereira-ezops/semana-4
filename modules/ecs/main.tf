@@ -90,18 +90,18 @@ resource "aws_lb" "main" {
   tags = { Project = var.project_name }
 }
 
-resource "aws_lb_target_group" "frontend" {
-  name        = "${var.project_name}-frontend-tg"
-  port        = 3000
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
-
-  health_check {
-    path = "/"
-    port = "3000"
-  }
-}
+# resource "aws_lb_target_group" "frontend" {
+#   name        = "${var.project_name}-frontend-tg"
+#   port        = 3000
+#   protocol    = "HTTP"
+#   vpc_id      = var.vpc_id
+#   target_type = "ip"
+#
+#   health_check {
+#     path = "/"
+#     port = "3000"
+#   }
+# }
 
 resource "aws_lb_target_group" "backend" {
   name        = "${var.project_name}-backend-tg"
@@ -122,11 +122,11 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
-    type = "redirect"
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Not found"
+      status_code  = "404"
     }
   }
 }
@@ -139,8 +139,28 @@ resource "aws_lb_listener" "https" {
   certificate_arn   = var.certificate_arn
 
   default_action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Not found"
+      status_code  = "404"
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "backend_http" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 100
+
+  condition {
+    path_pattern {
+      values = ["/api", "/api/*"]
+    }
+  }
+
+  action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.frontend.arn
+    target_group_arn = aws_lb_target_group.backend.arn
   }
 }
 
@@ -178,26 +198,26 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "aws_ecs_task_definition" "frontend" {
-  family                   = "${var.project_name}-frontend-task"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = 256
-  memory                   = 512
-  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
-
-  container_definitions = jsonencode([
-    {
-      name         = "frontend"
-      image        = var.frontend_image
-      essential    = true
-      portMappings = [{ containerPort = 3000, protocol = "tcp" }]
-      environment = [
-        { name = "NEXT_PUBLIC_API_URL", value = "https://${var.subdomain}/api" }
-      ]
-    }
-  ])
-}
+# resource "aws_ecs_task_definition" "frontend" {
+#   family                   = "${var.project_name}-frontend-task"
+#   requires_compatibilities = ["FARGATE"]
+#   network_mode             = "awsvpc"
+#   cpu                      = 256
+#   memory                   = 512
+#   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+#
+#   container_definitions = jsonencode([
+#     {
+#       name         = "frontend"
+#       image        = var.frontend_image
+#       essential    = true
+#       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
+#       environment = [
+#         { name = "NEXT_PUBLIC_API_URL", value = "https://${var.subdomain}/api" }
+#       ]
+#     }
+#   ])
+# }
 
 resource "aws_ecs_task_definition" "backend" {
   family                   = "${var.project_name}-backend-task"
@@ -224,27 +244,27 @@ resource "aws_ecs_task_definition" "backend" {
   ])
 }
 
-resource "aws_ecs_service" "frontend" {
-  name            = "${var.project_name}-frontend-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.frontend.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.frontend.arn
-    container_name   = "frontend"
-    container_port   = 3000
-  }
-
-  depends_on = [aws_lb_listener.http, aws_lb_listener.https]
-}
+# resource "aws_ecs_service" "frontend" {
+#   name            = "${var.project_name}-frontend-service"
+#   cluster         = aws_ecs_cluster.main.id
+#   task_definition = aws_ecs_task_definition.frontend.arn
+#   desired_count   = 1
+#   launch_type     = "FARGATE"
+#
+#   network_configuration {
+#     subnets          = var.private_subnet_ids
+#     security_groups  = [aws_security_group.ecs.id]
+#     assign_public_ip = false
+#   }
+#
+#   load_balancer {
+#     target_group_arn = aws_lb_target_group.frontend.arn
+#     container_name   = "frontend"
+#     container_port   = 3000
+#   }
+#
+#   depends_on = [aws_lb_listener.http, aws_lb_listener.https]
+# }
 
 resource "aws_ecs_service" "backend" {
   name            = "${var.project_name}-backend-service"
