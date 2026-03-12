@@ -1,181 +1,136 @@
-# Desafio 4 — Infraestrutura como Código com Terraform na AWS
+# Desafio Semana 4 — AWS Infrastructure with Terraform
 
-Infraestrutura completa para rodar uma aplicação Next.js + Express.js com banco de dados PostgreSQL na AWS, provisionada inteiramente via Terraform.
-
----
+Infraestrutura completa na AWS para uma aplicação full-stack (Next.js + Express.js + PostgreSQL), provisionada via Terraform com módulos, remote state e deploy manual via Docker + ECR.
 
 ## Arquitetura
 
 ```
-Internet
-    │
-    ▼ (HTTP :80 → redirect 301)
-    ▼ (HTTPS :443)
-Application Load Balancer (ALB) — subnets públicas
-    │
-    ├── /* ──────────────── ECS Fargate (Frontend - Next.js :3000)
-    │                             │ subnets privadas
-    └── /api, /api/* ────── ECS Fargate (Backend - Express.js :3001)
-                                  │ subnets privadas
-                                  ▼
-                          RDS PostgreSQL (subnets privadas)
-
-subnets privadas → NAT Gateway → Internet (saída apenas)
+Usuário
+  │
+  ▼ HTTPS
+CloudFront (mpdesafio4.ezopscloud.co)
+  ├── /* ──────────────► S3 (frontend estático Next.js)
+  └── /api/* ──────────► ALB (HTTP:80)
+                           └── ECS Fargate (backend Express.js :3001)
+                                 └── RDS PostgreSQL (subnet privada)
 ```
 
-### Componentes
+## Stack
 
-- **VPC** — rede isolada com subnets públicas e privadas em 2 Availability Zones
-- **NAT Gateway** — permite que recursos nas subnets privadas acessem a internet (saída apenas)
-- **ECR** — repositórios Docker para as imagens do frontend e backend
-- **ECS Fargate** — dois services independentes (frontend e backend) nas subnets privadas
-- **ALB** — balanceador de carga nas subnets públicas com HTTPS e redirect HTTP → HTTPS
-- **ACM** — certificado SSL gratuito validado via DNS pelo Route53
-- **Route53** — subdomínio `mpdesafio4.ezopscloud.co` apontando para o ALB
-- **RDS PostgreSQL** — banco de dados nas subnets privadas (sem acesso público)
-- **S3** — armazenamento do remote state do Terraform
+| Camada | Tecnologia |
+|--------|------------|
+| Frontend | Next.js 16 (export estático) |
+| Backend | Express.js + Node.js |
+| Banco de dados | PostgreSQL 16 (RDS) |
+| Infraestrutura | Terraform |
+| Container registry | Amazon ECR |
+| Orquestração | ECS Fargate |
+| CDN | CloudFront |
+| Storage estático | S3 |
+| Load balancer | ALB (Application Load Balancer) |
+| DNS | Route53 |
+| Certificado SSL | ACM (us-east-1 para CloudFront, us-east-2 para ALB) |
+| Rede | VPC customizada com subnets públicas e privadas |
 
----
-
-## Estrutura do Projeto
+## Módulos Terraform
 
 ```
 .
-├── backend.tf              # Configuração do remote state (S3)
+├── backend.tf              # Remote state (S3)
 ├── main.tf                 # Chamada dos módulos
-├── outputs.tf              # Outputs da infra (ALB DNS, ECR URLs, etc.)
-├── provider.tf             # Configuração do provider AWS
-├── variables.tf            # Variáveis raiz
-├── env/
-│   └── dev/
-│       └── terraform.tfvars  # Valores das variáveis (não commitar senhas)
+├── outputs.tf
+├── provider.tf             # aws us-east-2 + alias us-east-1
+├── variables.tf
+├── env/dev/terraform.tfvars  # NÃO commitado (contém senhas)
 └── modules/
-    ├── vpc/                # VPC, subnets, IGW, NAT Gateway, route tables
-    ├── ecr/                # Repositórios ECR
-    ├── ecs/                # Cluster, Task Definitions, Services, ALB
-    ├── rds/                # Instância RDS, subnet group, security group
-    ├── route53/            # Registro DNS apontando para o ALB
-    └── acm/                # Certificado SSL e validação via DNS
+    ├── vpc/          # VPC, subnets, IGW, NAT Gateway, route tables
+    ├── ecr/          # Repositórios ECR (frontend e backend)
+    ├── ecs/          # Cluster, task definitions, services, ALB, security groups
+    ├── rds/          # RDS instance, subnet group, security group
+    ├── route53/      # Hosted zone
+    ├── acm/          # Certificado SSL para o ALB (us-east-2)
+    └── cloudfront/   # Distribuição CloudFront, certificado ACM (us-east-1), S3 bucket policy
 ```
 
----
+## Rede
 
-## Pré-requisitos
+- **VPC:** `10.0.0.0/16`
+- **Subnets públicas:** `publica-desafio4-1a`, `publica-desafio4-1b` — ALB
+- **Subnets privadas:** `privada-desafio4-1a`, `privada-desafio4-1b` — ECS e RDS
+- **NAT Gateway:** permite que ECS (subnet privada) acesse a internet para pull de imagens
+- **Internet Gateway:** acesso público para o ALB
 
-- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.0
-- [AWS CLI](https://aws.amazon.com/cli/) configurado com credenciais válidas
-- [Docker](https://www.docker.com/) para build e push das imagens
-- Bucket S3 criado para o remote state
-- Domínio registrado no Route53
+## Roteamento CloudFront → ALB
 
----
+O CloudFront se comunica com o ALB via HTTP (porta 80), pois o certificado do ALB não cobre o DNS `.elb.amazonaws.com` — a segurança HTTPS é garantida entre o usuário e o CloudFront. O ALB responde somente a requisições no path `/api` e `/api/*`, com `fixed-response 404` como default.
 
-## Configuração
+## Variáveis de ambiente
 
-### 1. Variáveis
+### Frontend
 
-Crie o arquivo `env/dev/terraform.tfvars` com os valores do ambiente:
+A variável `NEXT_PUBLIC_API_URL` é embutida no build estático do Next.js e **não pode** ser injetada em runtime. Por isso é definida no `.env.production`:
 
-```hcl
-project_name = "desafio4"
-db_password  = "SuaSenhaSegura"
+```env
+NEXT_PUBLIC_API_URL=https://mpdesafio4.ezopscloud.co
 ```
 
-> **Nunca commite este arquivo.** Ele já está no `.gitignore`.
+> `.env.production` pode ser commitado pois contém apenas uma URL pública.
 
-### 2. Variáveis de ambiente esperadas pelo Backend
+### Backend
 
-| Variável   | Descrição                          |
-|------------|------------------------------------|
-| `DB_HOST`  | Endpoint do RDS (sem porta)        |
-| `DB_USER`  | Usuário do banco                   |
-| `DB_PASS`  | Senha do banco                     |
-| `DB_NAME`  | Nome do banco                      |
-| `DB_PORT`  | Porta do banco (padrão: `5432`)    |
-| `PORT`     | Porta do servidor (padrão: `3001`) |
+Variáveis sensíveis são injetadas via ECS task definition (Terraform), nunca commitadas:
 
----
+```
+DB_HOST, DB_USER, DB_PASS, DB_NAME, PORT
+```
 
 ## Deploy
 
-### 1. Inicializar o Terraform
+### Pré-requisitos
+
+- Terraform >= 1.5
+- AWS CLI configurado
+- Docker
+
+### Provisionamento da infraestrutura
 
 ```bash
 terraform init
+terraform plan -var-file="env/dev/terraform.tfvars"
+terraform apply -var-file="env/dev/terraform.tfvars"
 ```
 
-### 2. Validar a configuração
+### Build e push das imagens
 
 ```bash
-terraform validate
-```
-
-### 3. Visualizar o plano
-
-```bash
-terraform plan -var-file=env/dev/terraform.tfvars
-```
-
-### 4. Aplicar a infraestrutura
-
-```bash
-terraform apply -var-file=env/dev/terraform.tfvars
-```
-
-### 5. Obter as URLs geradas
-
-```bash
-terraform output
-```
-
-Exemplo de output:
-```
-alb_dns          = "desafio4-alb-xxxxxxxxxx.us-east-2.elb.amazonaws.com"
-app_url          = "https://mpdesafio4.ezopscloud.co"
-ecr_frontend_url = "xxxxxxxxxxxx.dkr.ecr.us-east-2.amazonaws.com/frontend"
-ecr_backend_url  = "xxxxxxxxxxxx.dkr.ecr.us-east-2.amazonaws.com/backend"
-```
-
----
-
-## Build e Push das Imagens Docker
-
-Após o `terraform apply`, envie as imagens para o ECR.
-
-### 1. Autenticar o Docker no ECR
-
-```bash
+# Autenticar no ECR
 aws ecr get-login-password --region us-east-2 | \
-  docker login --username AWS --password-stdin <ID_CONTA>.dkr.ecr.us-east-2.amazonaws.com
-```
-
-### 2. Build e push do frontend
-
-```bash
-docker build -t frontend ./caminho/do/nextjs
-docker tag frontend:latest <ECR_FRONTEND_URL>:latest
-docker push <ECR_FRONTEND_URL>:latest
-```
-
-### 3. Build e push do backend
-
-```bash
-docker build -t backend ./caminho/do/express
-docker tag backend:latest <ECR_BACKEND_URL>:latest
-docker push <ECR_BACKEND_URL>:latest
-```
-
-### 4. Forçar novo deployment no ECS
-
-```bash
-# Frontend
-aws ecs update-service \
-  --cluster desafio4-cluster \
-  --service desafio4-frontend-service \
-  --force-new-deployment \
-  --region us-east-2
+  docker login --username AWS --password-stdin 618889059366.dkr.ecr.us-east-2.amazonaws.com
 
 # Backend
+docker build -t backend ./backend
+docker tag backend:latest 618889059366.dkr.ecr.us-east-2.amazonaws.com/backend:latest
+docker push 618889059366.dkr.ecr.us-east-2.amazonaws.com/backend:latest
+
+# Frontend (build estático)
+cd frontend
+npm run build
+aws s3 sync ./out s3://mateus-pereira-lambda-artifacts/frontend --delete --region us-east-2
+```
+
+### Invalidar cache do CloudFront após atualizar o frontend
+
+```bash
+aws cloudfront create-invalidation \
+  --distribution-id $(aws cloudfront list-distributions \
+    --query "DistributionList.Items[?Aliases.Items[?contains(@, 'mpdesafio4')]].Id" \
+    --output text) \
+  --paths "/*"
+```
+
+### Forçar redeploy do ECS backend
+
+```bash
 aws ecs update-service \
   --cluster desafio4-cluster \
   --service desafio4-backend-service \
@@ -183,96 +138,55 @@ aws ecs update-service \
   --region us-east-2
 ```
 
-### 5. Verificar se os services estão rodando
+## Desenvolvimento local
+
+O projeto inclui um `docker-compose.yaml` com nginx, frontend, backend e PostgreSQL local.
 
 ```bash
-aws ecs describe-services \
-  --cluster desafio4-cluster \
-  --services desafio4-frontend-service desafio4-backend-service \
-  --region us-east-2 \
-  --query "services[*].{name:serviceName,running:runningCount,desired:desiredCount}"
+docker-compose up --build
 ```
 
----
+Acesse em `http://localhost`.
 
-## Testando a Aplicação
+O nginx roteia `/api/*` para o backend e `/*` para o frontend, espelhando o comportamento do CloudFront + ALB em produção.
 
-### Endpoints gerais
+### Variáveis locais
 
-| Endpoint | Descrição |
-|----------|-----------|
-| `https://mpdesafio4.ezopscloud.co/` | Frontend (Next.js) |
-| `https://mpdesafio4.ezopscloud.co/api/health` | Health check do backend |
-| `https://mpdesafio4.ezopscloud.co/api/db-time` | Consulta ao banco de dados |
+Crie um `.env` na raiz do projeto (não commitado):
 
-> HTTP redireciona automaticamente para HTTPS via redirect 301.
-
-### CRUD de Tarefas
-
-A tabela `tasks` é criada automaticamente na primeira execução do backend.
-
-| Método | Endpoint | Descrição |
-|--------|----------|-----------|
-| `POST` | `/api/tasks` | Criar tarefa |
-| `GET` | `/api/tasks` | Listar todas |
-| `GET` | `/api/tasks/:id` | Buscar uma |
-| `PUT` | `/api/tasks/:id` | Atualizar |
-| `DELETE` | `/api/tasks/:id` | Deletar |
-
-**Exemplos:**
-
-```bash
-# Criar
-curl -X POST https://mpdesafio4.ezopscloud.co/api/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Minha tarefa"}'
-
-# Listar
-curl https://mpdesafio4.ezopscloud.co/api/tasks
-
-# Buscar
-curl https://mpdesafio4.ezopscloud.co/api/tasks/1
-
-# Atualizar
-curl -X PUT https://mpdesafio4.ezopscloud.co/api/tasks/1 \
-  -H "Content-Type: application/json" \
-  -d '{"done": true}'
-
-# Deletar
-curl -X DELETE https://mpdesafio4.ezopscloud.co/api/tasks/1
+```env
+DB_HOST=db
+DB_USER=mateus
+DB_PASS=mypassword
+DB_NAME=mydb
+POSTGRES_USER=mateus
+POSTGRES_PASSWORD=mypassword
+POSTGRES_DB=mydb
 ```
 
----
+E um `.env.local` dentro de `frontend/`:
 
-## Destruir a Infraestrutura
-
-```bash
-terraform destroy -var-file=env/dev/terraform.tfvars
+```env
+NEXT_PUBLIC_API_URL=http://localhost
 ```
 
-> O ECR está configurado com `force_delete = true` e o RDS com `deletion_protection = false`, então o destroy funciona sem intervenção manual.
+## Decisões técnicas
 
----
+**Por que CloudFront em vez de ALB direto para o frontend?**
+S3 + CloudFront é mais barato e escalável para assets estáticos do que manter um container ECS rodando 24/7 para servir HTML/JS/CSS.
 
-## Remote State
+**Por que dois certificados ACM?**
+O CloudFront obrigatoriamente requer certificados na região `us-east-1`. O ALB usa um certificado em `us-east-2` (mesma região dos recursos).
 
-O state é armazenado remotamente no S3 com locking habilitado:
+**Por que `http-only` entre CloudFront e ALB?**
+O certificado do ALB é emitido para `mpdesafio4.ezopscloud.co`, mas o CloudFront conecta pelo DNS do ALB (`*.elb.amazonaws.com`). Isso causa erro de SNI se usar HTTPS. A segurança é mantida pois o tráfego CloudFront → ALB ocorre dentro da rede da AWS.
 
-```hcl
-# backend.tf
-terraform {
-  backend "s3" {
-    bucket       = "mateus-pereira-lambda-artifacts"
-    key          = "dev/terraform.tfstate"
-    region       = "us-east-2"
-    encrypt      = true
-    use_lockfile = true
-  }
-}
-```
+**Por que remote state no S3?**
+Permite que múltiplos membros da equipe compartilhem o estado do Terraform sem conflitos, com lock via arquivo no próprio S3.
 
-Em caso de lock travado (ex: após falha), desbloqueie com:
+## URLs
 
-```bash
-terraform force-unlock <LOCK_ID>
-```
+| Ambiente | URL |
+|----------|-----|
+| Produção | https://mpdesafio4.ezopscloud.co |
+| Health check | https://mpdesafio4.ezopscloud.co/api/health |
