@@ -110,22 +110,6 @@ resource "aws_security_group" "observability" {
   }
 
   ingress {
-    from_port       = 9090
-    to_port         = 9090
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-    description     = "Prometheus from ALB"
-  }
-
-  ingress {
-    from_port       = 9093
-    to_port         = 9093
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-    description     = "Alertmanager from ALB"
-  }
-
-  ingress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -143,30 +127,6 @@ resource "aws_security_group" "observability" {
   tags = {
     Project = var.project_name
   }
-}
-
-resource "aws_security_group" "efs" {
-  name        = "${var.project_name}-efs-sg"
-  description = "Allow EFS from observability tasks"
-  vpc_id      = var.vpc_id
-
-  ingress {
-    from_port       = 2049
-    to_port         = 2049
-    protocol        = "tcp"
-    security_groups = [aws_security_group.observability.id]
-    description     = "NFS from observability tasks"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Project = var.project_name }
-
 }
 
 resource "aws_lb" "main" {
@@ -237,23 +197,6 @@ resource "aws_lb_target_group" "backend" {
   }
 }
 
-resource "aws_lb_target_group" "prometheus" {
-  name        = "${var.project_name}-prometheus-tg"
-  port        = 9090
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
-
-  health_check {
-    path                = "/prometheus/-/healthy"
-    port                = "9090"
-    interval            = 30
-    timeout             = 10
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-  }
-}
-
 resource "aws_lb_target_group" "grafana" {
   name        = "${var.project_name}-grafana-tg"
   port        = 3000
@@ -264,23 +207,6 @@ resource "aws_lb_target_group" "grafana" {
   health_check {
     path = "/grafana/api/health"
     port = "3000"
-  }
-}
-
-resource "aws_lb_target_group" "alertmanager" {
-  name        = "${var.project_name}-alertmanager-tg"
-  port        = 9093
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
-
-  health_check {
-    path                = "/alertmanager/-/healthy"
-    port                = "9093"
-    interval            = 30
-    timeout             = 10
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
   }
 }
 
@@ -332,38 +258,6 @@ resource "aws_lb_listener_rule" "metrics_http" {
   }
 }
 
-resource "aws_lb_listener_rule" "prometheus_http" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 101
-
-  condition {
-    path_pattern {
-      values = ["/prometheus", "/prometheus/*"]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.prometheus.arn
-  }
-}
-
-resource "aws_lb_listener_rule" "prometheus_https" {
-  listener_arn = aws_lb_listener.https.arn
-  priority     = 101
-
-  condition {
-    path_pattern {
-      values = ["/prometheus", "/prometheus/*"]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.prometheus.arn
-  }
-}
-
 resource "aws_lb_listener_rule" "grafana_http" {
   listener_arn = aws_lb_listener.http.arn
   priority     = 102
@@ -394,38 +288,6 @@ resource "aws_lb_listener_rule" "grafana_https" {
   action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.grafana.arn
-  }
-}
-
-resource "aws_lb_listener_rule" "alertmanager_http" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 103
-
-  condition {
-    path_pattern {
-      values = ["/alertmanager", "/alertmanager/*"]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.alertmanager.arn
-  }
-}
-
-resource "aws_lb_listener_rule" "alertmanager_https" {
-  listener_arn = aws_lb_listener.https.arn
-  priority     = 103
-
-  condition {
-    path_pattern {
-      values = ["/alertmanager", "/alertmanager/*"]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.alertmanager.arn
   }
 }
 
@@ -551,40 +413,6 @@ resource "aws_service_discovery_service" "alertmanager" {
     failure_threshold = 1
   }
 }
-
-resource "aws_efs_file_system" "grafana" {
-  creation_token = "${var.project_name}-grafana-efs"
-  tags           = { Project = var.project_name }
-}
-
-resource "aws_efs_mount_target" "grafana" {
-  for_each        = toset(var.private_subnet_ids)
-  file_system_id  = aws_efs_file_system.grafana.id
-  subnet_id       = each.value
-  security_groups = [aws_security_group.efs.id]
-}
-
-
-# resource "aws_ecs_task_definition" "frontend" {
-#   family                   = "${var.project_name}-frontend-task"
-#   requires_compatibilities = ["FARGATE"]
-#   network_mode             = "awsvpc"
-#   cpu                      = 256
-#   memory                   = 512
-#   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
-#
-#   container_definitions = jsonencode([
-#     {
-#       name         = "frontend"
-#       image        = var.frontend_image
-#       essential    = true
-#       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
-#       environment = [
-#         { name = "NEXT_PUBLIC_API_URL", value = "https://${var.subdomain}/api" }
-#       ]
-#     }
-#   ])
-# }
 
 resource "aws_ecs_task_definition" "backend" {
   family                   = "${var.project_name}-backend-task"
@@ -736,12 +564,6 @@ resource "aws_ecs_service" "prometheus" {
     assign_public_ip = true
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.prometheus.arn
-    container_name   = "prometheus"
-    container_port   = 9090
-  }
-
   service_registries {
     registry_arn = aws_service_discovery_service.prometheus.arn
   }
@@ -782,12 +604,6 @@ resource "aws_ecs_service" "alertmanager" {
     subnets          = var.public_subnet_ids
     security_groups  = [aws_security_group.observability.id]
     assign_public_ip = true
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.alertmanager.arn
-    container_name   = "alertmanager"
-    container_port   = 9093
   }
 
   service_registries {
