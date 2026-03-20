@@ -17,3 +17,13 @@ variable "db_pass" {
   type      = string
   sensitive = true
 }
+
+variable "grafana_admin_password" {
+  type      = string
+  sensitive = true
+}
+
+variable "configs_bucket" {
+  type    = string
+  default = "mateus-pereira-lambda-artifacts"
+}
