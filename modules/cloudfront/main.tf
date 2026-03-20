@@ -165,44 +165,6 @@ resource "aws_cloudfront_distribution" "main" {
     max_ttl     = 0
   }
 
-  # Comportamento /prometheus/* → ALB
-  ordered_cache_behavior {
-    path_pattern           = "/prometheus*"
-    target_origin_id       = "alb-prometheus"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods         = ["GET", "HEAD"]
-
-    forwarded_values {
-      query_string = true
-      headers      = ["*"]
-      cookies { forward = "all" }
-    }
-
-    min_ttl     = 0
-    default_ttl = 0
-    max_ttl     = 0
-  }
-
-  # Comportamento /alertmanager/* → ALB
-  ordered_cache_behavior {
-    path_pattern           = "/alertmanager*"
-    target_origin_id       = "alb-alertmanager"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods         = ["GET", "HEAD"]
-
-    forwarded_values {
-      query_string = true
-      headers      = ["*"]
-      cookies { forward = "all" }
-    }
-
-    min_ttl     = 0
-    default_ttl = 0
-    max_ttl     = 0
-  }
-
   # Comportamento padrão → S3
   default_cache_behavior {
     target_origin_id       = "s3-frontend"
