@@ -26,6 +26,27 @@ variable "backend_image" {
   type = string
 }
 
+variable "prometheus_image" {
+  type = string
+}
+
+variable "grafana_image" {
+  type = string
+}
+
+variable "alertmanager_image" {
+  type = string
+}
+
+variable "configs_bucket" {
+  type = string
+}
+
+variable "grafana_admin_password" {
+  type      = string
+  sensitive = true
+}
+
 variable "db_endpoint" {
   type      = string
   sensitive = true

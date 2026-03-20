@@ -33,6 +33,14 @@ resource "aws_security_group" "alb" {
     self             = false
   }
 
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["10.0.0.0/16"]
+    description = "Internal communication with VPC"
+  }
+
   egress {
     from_port        = 0
     to_port          = 0
@@ -65,6 +73,14 @@ resource "aws_security_group" "ecs" {
     self             = false
   }
 
+  ingress {
+    from_port       = 3001
+    to_port         = 3001
+    protocol        = "tcp"
+    security_groups = [aws_security_group.observability.id]
+    description     = "Prometheus scrape"
+  }
+
   egress {
     from_port        = 0
     to_port          = 0
@@ -80,6 +96,79 @@ resource "aws_security_group" "ecs" {
   tags = { Project = var.project_name }
 }
 
+resource "aws_security_group" "observability" {
+  name        = "${var.project_name}-observability-sg"
+  description = "Prometheus, Grafana and Alertmanager"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    from_port       = 3000
+    to_port         = 3000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+    description     = "Grafana from ALB"
+  }
+
+  ingress {
+    from_port       = 9090
+    to_port         = 9090
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+    description     = "Prometheus from ALB"
+  }
+
+  ingress {
+    from_port       = 9093
+    to_port         = 9093
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+    description     = "Alertmanager from ALB"
+  }
+
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["10.0.0.0/16"]
+    description = "Internal communication with VPC"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+resource "aws_security_group" "efs" {
+  name        = "${var.project_name}-efs-sg"
+  description = "Allow EFS from observability tasks"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    from_port       = 2049
+    to_port         = 2049
+    protocol        = "tcp"
+    security_groups = [aws_security_group.observability.id]
+    description     = "NFS from observability tasks"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Project = var.project_name }
+
+}
+
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"
   internal           = false
@@ -88,32 +177,6 @@ resource "aws_lb" "main" {
   subnets            = var.public_subnet_ids
 
   tags = { Project = var.project_name }
-}
-
-# resource "aws_lb_target_group" "frontend" {
-#   name        = "${var.project_name}-frontend-tg"
-#   port        = 3000
-#   protocol    = "HTTP"
-#   vpc_id      = var.vpc_id
-#   target_type = "ip"
-#
-#   health_check {
-#     path = "/"
-#     port = "3000"
-#   }
-# }
-
-resource "aws_lb_target_group" "backend" {
-  name        = "${var.project_name}-backend-tg"
-  port        = 3001
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
-
-  health_check {
-    path = "/api/health"
-    port = "3001"
-  }
 }
 
 resource "aws_lb_listener" "http" {
@@ -145,6 +208,79 @@ resource "aws_lb_listener" "https" {
       message_body = "Not found"
       status_code  = "404"
     }
+  }
+}
+
+# resource "aws_lb_target_group" "frontend" {
+#   name        = "${var.project_name}-frontend-tg"
+#   port        = 3000
+#   protocol    = "HTTP"
+#   vpc_id      = var.vpc_id
+#   target_type = "ip"
+#
+#   health_check {
+#     path = "/"
+#     port = "3000"
+#   }
+# }
+
+resource "aws_lb_target_group" "backend" {
+  name        = "${var.project_name}-backend-tg"
+  port        = 3001
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path = "/api/health"
+    port = "3001"
+  }
+}
+
+resource "aws_lb_target_group" "prometheus" {
+  name        = "${var.project_name}-prometheus-tg"
+  port        = 9090
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path                = "/prometheus/-/healthy"
+    port                = "9090"
+    interval            = 30
+    timeout             = 10
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+}
+
+resource "aws_lb_target_group" "grafana" {
+  name        = "${var.project_name}-grafana-tg"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path = "/grafana/api/health"
+    port = "3000"
+  }
+}
+
+resource "aws_lb_target_group" "alertmanager" {
+  name        = "${var.project_name}-alertmanager-tg"
+  port        = 9093
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path                = "/alertmanager/-/healthy"
+    port                = "9093"
+    interval            = 30
+    timeout             = 10
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
   }
 }
 
@@ -180,6 +316,119 @@ resource "aws_lb_listener_rule" "backend_https" {
   }
 }
 
+resource "aws_lb_listener_rule" "metrics_http" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 99
+
+  condition {
+    path_pattern {
+      values = ["/metrics"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "prometheus_http" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 101
+
+  condition {
+    path_pattern {
+      values = ["/prometheus", "/prometheus/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.prometheus.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "prometheus_https" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 101
+
+  condition {
+    path_pattern {
+      values = ["/prometheus", "/prometheus/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.prometheus.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "grafana_http" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 102
+
+  condition {
+    path_pattern {
+      values = ["/grafana", "/grafana/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.grafana.arn
+  }
+}
+
+
+resource "aws_lb_listener_rule" "grafana_https" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 102
+
+  condition {
+    path_pattern {
+      values = ["/grafana", "/grafana/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.grafana.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "alertmanager_http" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 103
+
+  condition {
+    path_pattern {
+      values = ["/alertmanager", "/alertmanager/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.alertmanager.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "alertmanager_https" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 103
+
+  condition {
+    path_pattern {
+      values = ["/alertmanager", "/alertmanager/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.alertmanager.arn
+  }
+}
+
 resource "aws_iam_role" "ecs_task_execution" {
   name = "${var.project_name}-ecs-execution-role"
 
@@ -193,10 +442,128 @@ resource "aws_iam_role" "ecs_task_execution" {
   })
 }
 
+resource "aws_iam_role_policy" "ecs_task_execution_servicediscovery" {
+  name = "service-discovery"
+  role = aws_iam_role.ecs_task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "servicediscovery:RegisterInstance",
+        "servicediscovery:DeregisterInstance",
+        "servicediscovery:GetInstance",
+        "servicediscovery:ListInstances",
+        "route53:ChangeResourceRecordSets",
+        "route53:GetHealthCheck",
+        "route53:CreateHealthCheck",
+        "route53:DeleteHealthCheck",
+        "route53:UpdateHealthCheck"
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   role       = aws_iam_role.ecs_task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
+
+resource "aws_iam_role" "observability_task" {
+  name = "${var.project_name}-observability-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "observability_s3" {
+  name = "s3-configs-access"
+  role = aws_iam_role.observability_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["s3:GetObject", "s3:ListBucket"]
+      Resource = [
+        "arn:aws:s3:::${var.configs_bucket}",
+        "arn:aws:s3:::${var.configs_bucket}/*"
+      ]
+    }]
+  })
+}
+
+resource "aws_service_discovery_private_dns_namespace" "local" {
+  name        = "local"
+  vpc         = var.vpc_id
+  description = "Internal service discovery"
+}
+
+resource "aws_service_discovery_service" "backend" {
+  name = "backend"
+  dns_config {
+    namespace_id   = aws_service_discovery_private_dns_namespace.local.id
+    routing_policy = "MULTIVALUE"
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+  }
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
+resource "aws_service_discovery_service" "prometheus" {
+  name = "prometheus"
+  dns_config {
+    namespace_id   = aws_service_discovery_private_dns_namespace.local.id
+    routing_policy = "MULTIVALUE"
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+  }
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
+resource "aws_service_discovery_service" "alertmanager" {
+  name = "alertmanager"
+  dns_config {
+    namespace_id   = aws_service_discovery_private_dns_namespace.local.id
+    routing_policy = "MULTIVALUE"
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+  }
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
+resource "aws_efs_file_system" "grafana" {
+  creation_token = "${var.project_name}-grafana-efs"
+  tags           = { Project = var.project_name }
+}
+
+resource "aws_efs_mount_target" "grafana" {
+  for_each        = toset(var.private_subnet_ids)
+  file_system_id  = aws_efs_file_system.grafana.id
+  subnet_id       = each.value
+  security_groups = [aws_security_group.efs.id]
+}
+
 
 # resource "aws_ecs_task_definition" "frontend" {
 #   family                   = "${var.project_name}-frontend-task"
@@ -244,6 +611,69 @@ resource "aws_ecs_task_definition" "backend" {
   ])
 }
 
+resource "aws_ecs_task_definition" "prometheus" {
+  family                   = "${var.project_name}-prometheus"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.observability_task.arn
+
+  container_definitions = jsonencode([{
+    name         = "prometheus"
+    image        = var.prometheus_image
+    essential    = true
+    portMappings = [{ containerPort = 9090, protocol = "tcp" }]
+    environment = [
+      { name = "CONFIGS_BUCKET", value = var.configs_bucket },
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region }
+    ]
+  }])
+}
+
+resource "aws_ecs_task_definition" "grafana" {
+  family                   = "${var.project_name}-grafana"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+
+  container_definitions = jsonencode([{
+    name         = "grafana"
+    image        = var.grafana_image
+    essential    = true
+    portMappings = [{ containerPort = 3000, protocol = "tcp" }]
+    environment = [
+      { name = "GF_SECURITY_ADMIN_PASSWORD", value = var.grafana_admin_password },
+      { name = "GF_SERVER_ROOT_URL", value = "https://${var.subdomain}/grafana" },
+      { name = "GF_SERVER_SERVE_FROM_SUB_PATH", value = "true" }
+    ]
+  }])
+}
+
+resource "aws_ecs_task_definition" "alertmanager" {
+  family                   = "${var.project_name}-alertmanager"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.observability_task.arn
+
+  container_definitions = jsonencode([{
+    name         = "alertmanager"
+    image        = var.alertmanager_image
+    essential    = true
+    portMappings = [{ containerPort = 9093, protocol = "tcp" }]
+    environment = [
+      { name = "CONFIGS_BUCKET", value = var.configs_bucket },
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region }
+    ]
+  }])
+}
+
 # resource "aws_ecs_service" "frontend" {
 #   name            = "${var.project_name}-frontend-service"
 #   cluster         = aws_ecs_cluster.main.id
@@ -285,6 +715,84 @@ resource "aws_ecs_service" "backend" {
     container_port   = 3001
   }
 
+  service_registries {
+    registry_arn = aws_service_discovery_service.backend.arn
+  }
+
   depends_on = [aws_lb_listener.http, aws_lb_listener.https]
 }
 
+resource "aws_ecs_service" "prometheus" {
+  name                   = "${var.project_name}-prometheus-service"
+  cluster                = aws_ecs_cluster.main.id
+  task_definition        = aws_ecs_task_definition.prometheus.arn
+  desired_count          = 1
+  launch_type            = "FARGATE"
+  enable_execute_command = true
+
+  network_configuration {
+    subnets          = var.public_subnet_ids
+    security_groups  = [aws_security_group.observability.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.prometheus.arn
+    container_name   = "prometheus"
+    container_port   = 9090
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.prometheus.arn
+  }
+
+  depends_on = [aws_lb_listener.http, aws_lb_listener.https]
+}
+
+resource "aws_ecs_service" "grafana" {
+  name            = "${var.project_name}-grafana-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.grafana.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = var.public_subnet_ids
+    security_groups  = [aws_security_group.observability.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.grafana.arn
+    container_name   = "grafana"
+    container_port   = 3000
+  }
+
+  depends_on = [aws_lb_listener.http, aws_lb_listener.https]
+}
+
+resource "aws_ecs_service" "alertmanager" {
+  name            = "${var.project_name}-alertmanager-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.alertmanager.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = var.public_subnet_ids
+    security_groups  = [aws_security_group.observability.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.alertmanager.arn
+    container_name   = "alertmanager"
+    container_port   = 9093
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.alertmanager.arn
+  }
+
+  depends_on = [aws_lb_listener.http, aws_lb_listener.https]
+}
