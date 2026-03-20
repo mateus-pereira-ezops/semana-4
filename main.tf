@@ -14,9 +14,14 @@ module "rds" {
 }
 
 module "ecr" {
-  source           = "./modules/ecr"
-  project_name     = var.project_name
-  repository_names = ["frontend", "backend"]
+  source       = "./modules/ecr"
+  project_name = var.project_name
+  repository_names = [
+    "frontend",
+    "backend",
+    "${var.project_name}-prometheus",
+    "${var.project_name}-grafana",
+  "${var.project_name}-alertmanager"]
 }
 
 module "ecs" {
@@ -28,15 +33,20 @@ module "ecs" {
   public_subnet_ids  = module.vpc.public_subnet_ids
   private_subnet_ids = module.vpc.private_subnet_ids
 
-  frontend_image = "${module.ecr.repository_urls["frontend"]}:latest"
-  backend_image  = "${module.ecr.repository_urls["backend"]}:latest"
+  frontend_image     = "${module.ecr.repository_urls["frontend"]}:latest"
+  backend_image      = "${module.ecr.repository_urls["backend"]}:latest"
+  prometheus_image   = "${module.ecr.repository_urls["${var.project_name}-prometheus"]}:latest"
+  grafana_image      = "${module.ecr.repository_urls["${var.project_name}-grafana"]}:latest"
+  alertmanager_image = "${module.ecr.repository_urls["${var.project_name}-alertmanager"]}:latest"
 
-  db_endpoint     = module.rds.db_endpoint
-  db_host         = module.rds.db_host
-  db_name         = module.rds.db_name
-  db_pass         = var.db_pass
-  certificate_arn = module.acm.certificate_arn
-  subdomain       = "mpdesafio4.ezopscloud.co"
+  grafana_admin_password = var.grafana_admin_password
+  db_endpoint            = module.rds.db_endpoint
+  db_host                = module.rds.db_host
+  db_name                = module.rds.db_name
+  db_pass                = var.db_pass
+  certificate_arn        = module.acm.certificate_arn
+  subdomain              = "mpdesafio4.ezopscloud.co"
+  configs_bucket         = var.configs_bucket
 }
 
 module "route53" {
