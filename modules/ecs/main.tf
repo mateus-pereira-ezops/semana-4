@@ -467,6 +467,7 @@ resource "aws_ecs_task_definition" "grafana" {
   cpu                      = 256
   memory                   = 512
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.observability_task.arn
 
   container_definitions = jsonencode([{
     name         = "grafana"
@@ -476,7 +477,12 @@ resource "aws_ecs_task_definition" "grafana" {
     environment = [
       { name = "GF_SECURITY_ADMIN_PASSWORD", value = var.grafana_admin_password },
       { name = "GF_SERVER_ROOT_URL", value = "https://${var.subdomain}/grafana" },
-      { name = "GF_SERVER_SERVE_FROM_SUB_PATH", value = "true" }
+      { name = "GF_SERVER_SERVE_FROM_SUB_PATH", value = "true" },
+      { name = "GF_AUTH_SIGV4_AUTH_ENABLED", value = "true" },
+      { name = "CONFIGS_BUCKET", value = var.configs_bucket },
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "AWS_SDK_LOAD_CONFIG", value = "true" }
     ]
   }])
 }
@@ -551,12 +557,11 @@ resource "aws_ecs_service" "backend" {
 }
 
 resource "aws_ecs_service" "prometheus" {
-  name                   = "${var.project_name}-prometheus-service"
-  cluster                = aws_ecs_cluster.main.id
-  task_definition        = aws_ecs_task_definition.prometheus.arn
-  desired_count          = 1
-  launch_type            = "FARGATE"
-  enable_execute_command = true
+  name            = "${var.project_name}-prometheus-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.prometheus.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
 
   network_configuration {
     subnets          = var.public_subnet_ids
