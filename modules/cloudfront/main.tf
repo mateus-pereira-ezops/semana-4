@@ -86,7 +86,6 @@ resource "aws_cloudfront_distribution" "main" {
   default_root_object = "index.html"
   aliases             = [var.subdomain]
 
-  # Origin 1: S3 (frontend estático)
   origin {
     domain_name              = data.aws_s3_bucket.frontend.bucket_regional_domain_name
     origin_id                = "s3-frontend"
@@ -94,7 +93,6 @@ resource "aws_cloudfront_distribution" "main" {
     origin_path              = "/frontend"
   }
 
-  # Origin 2: ALB (backend)
   origin {
     domain_name = var.alb_dns
     origin_id   = "alb-backend"
@@ -107,7 +105,6 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  # Origin 3: ALB (prometheus)
   origin {
     domain_name = var.alb_dns
     origin_id   = "alb-prometheus"
@@ -120,7 +117,6 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  # Origin 4: ALB (grafana)
   origin {
     domain_name = var.alb_dns
     origin_id   = "alb-grafana"
@@ -133,7 +129,6 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  # Origin 5: ALB (alertmanager)
   origin {
     domain_name = var.alb_dns
     origin_id   = "alb-alertmanager"
@@ -146,7 +141,6 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  # Comportamento /grafana/* → ALB
   ordered_cache_behavior {
     path_pattern           = "/grafana*"
     target_origin_id       = "alb-grafana"
@@ -165,7 +159,6 @@ resource "aws_cloudfront_distribution" "main" {
     max_ttl     = 0
   }
 
-  # Comportamento padrão → S3
   default_cache_behavior {
     target_origin_id       = "s3-frontend"
     viewer_protocol_policy = "redirect-to-https"
@@ -178,7 +171,6 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  # Comportamento /api/* → ALB
   ordered_cache_behavior {
     path_pattern           = "/api/*"
     target_origin_id       = "alb-backend"
@@ -210,7 +202,6 @@ resource "aws_cloudfront_distribution" "main" {
   tags = { Project = var.project_name }
 }
 
-# Atualiza Route53 para apontar para o CloudFront
 resource "aws_route53_record" "app" {
   zone_id = var.hosted_zone_id
   name    = var.subdomain
