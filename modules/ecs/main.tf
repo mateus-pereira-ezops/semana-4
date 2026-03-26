@@ -321,7 +321,10 @@ resource "aws_iam_role_policy" "ecs_task_execution_servicediscovery" {
         "route53:GetHealthCheck",
         "route53:CreateHealthCheck",
         "route53:DeleteHealthCheck",
-        "route53:UpdateHealthCheck"
+        "route53:UpdateHealthCheck",
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
       ]
       Resource = "*"
     }]
@@ -484,6 +487,15 @@ resource "aws_ecs_task_definition" "grafana" {
       { name = "AWS_REGION", value = var.aws_region },
       { name = "AWS_SDK_LOAD_CONFIG", value = "true" }
     ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = "/ecs/${var.project_name}-grafana"
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "ecs"
+        "awslogs-create-group"  = "true"
+      }
+    }
   }])
 }
 
