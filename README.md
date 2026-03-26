@@ -1,6 +1,6 @@
-# Desafio Semana 4 — AWS Infrastructure with Terraform
+# Desafio Semana 4/6 — Observabilidade & Resiliência na AWS
 
-Infraestrutura completa na AWS para uma aplicação full-stack (Next.js + Express.js + PostgreSQL), provisionada via Terraform com módulos, remote state e deploy manual via Docker + ECR. Inclui stack completo de observabilidade com Prometheus, Grafana e Alertmanager.
+Infraestrutura completa na AWS para uma aplicação full-stack (Next.js + Express.js + PostgreSQL), provisionada via Terraform com módulos, remote state e deploy manual via Docker + ECR. Inclui stack de observabilidade com Amazon Managed Prometheus (AMP), Grafana e alerting nativo via Grafana Alerting + Slack.
 
 ## Arquitetura
 
@@ -17,16 +17,16 @@ CloudFront (<SEU_SUBDOMINIO>)
                            └── ECS Fargate (Grafana :3000)
 
 Comunicação interna (VPC):
-  Prometheus ──scrape──► backend:3001  (via ALB /metrics)
-  Prometheus ──alerts──► alertmanager.local:9093  (via Cloud Map)
-  Grafana    ──query───► prometheus.local:9090  (via Cloud Map)
+  Prometheus (AMP) ──scrape──► backend:3001  (via Cloud Map)
+  Grafana          ──query───► AMP  (via SigV4)
+  Grafana Alerting ──notify──► Slack
 ```
 
 ## Stack
 
 | Camada | Tecnologia |
 |--------|------------|
-| Frontend | Next.js 16 (export estático) |
+| Frontend | Next.js (export estático) |
 | Backend | Express.js + Node.js |
 | Banco de dados | PostgreSQL 16 (RDS) |
 | Infraestrutura | Terraform |
@@ -38,9 +38,9 @@ Comunicação interna (VPC):
 | DNS | Route53 |
 | Certificado SSL | ACM (us-east-1 para CloudFront, us-east-2 para ALB) |
 | Rede | VPC customizada com subnets públicas e privadas |
-| Métricas | Prometheus |
+| Métricas | Amazon Managed Prometheus (AMP) |
 | Dashboards | Grafana |
-| Alertas | Alertmanager + Slack |
+| Alertas | Grafana Alerting + Slack |
 | Service discovery | AWS Cloud Map |
 
 ## Módulos Terraform
@@ -55,7 +55,7 @@ Comunicação interna (VPC):
 ├── env/dev/terraform.tfvars  # NÃO commitado (contém senhas)
 └── modules/
     ├── vpc/          # VPC, subnets, IGW, NAT Gateway, route tables
-    ├── ecr/          # Repositórios ECR (frontend, backend, prometheus, grafana, alertmanager)
+    ├── ecr/          # Repositórios ECR (frontend, backend, grafana)
     ├── ecs/          # Cluster, task definitions, services, ALB, security groups, Cloud Map
     ├── rds/          # RDS instance, subnet group, security group
     ├── route53/      # Hosted zone
@@ -66,7 +66,7 @@ Comunicação interna (VPC):
 ## Rede
 
 - **VPC:** `10.0.0.0/16`
-- **Subnets públicas:** `publica-desafio4-1a`, `publica-desafio4-1b` — ALB, Grafana, Prometheus, Alertmanager
+- **Subnets públicas:** `publica-desafio4-1a`, `publica-desafio4-1b` — ALB, Grafana
 - **Subnets privadas:** `privada-desafio4-1a`, `privada-desafio4-1b` — Backend e RDS
 - **NAT Gateway:** permite que ECS (subnet privada) acesse a internet para pull de imagens
 - **Internet Gateway:** acesso público para o ALB
@@ -85,54 +85,79 @@ O CloudFront se comunica com o ALB via HTTP (porta 80), pois o certificado do AL
 
 ### Arquitetura interna
 
-O stack de observabilidade roda inteiramente no ECS Fargate. Prometheus e Alertmanager **não são expostos publicamente** — apenas o Grafana é acessível via CloudFront, protegido por autenticação.
+O Grafana é o único componente de observabilidade exposto publicamente. O AMP é um serviço gerenciado da AWS acessado via API com autenticação SigV4 — sem containers extras para Prometheus ou Alertmanager.
 
 ```
 Internet → CloudFront → ALB → Grafana (autenticado)
-                                  ↓ (interno)
-                              Prometheus
-                             ↙          ↘
-                     backend:3001    Alertmanager
-                     (via ALB)       (via Cloud Map)
-                                         ↓
-                                       Slack
+                                  ↓ SigV4
+                              Amazon AMP
+                                  ↑ remote_write
+                              backend:3001
+                              (via Cloud Map)
+
+Grafana Alerting → Slack
 ```
 
 ### Serviços
 
-| Serviço | Imagem | Acesso |
-|---------|--------|--------|
-| Grafana | `grafana/grafana:latest` | Público via `/grafana` (login obrigatório) |
-| Prometheus | Customizada (Prometheus + AWS CLI) | Interno apenas |
-| Alertmanager | Customizada (Alertmanager + AWS CLI) | Interno apenas |
+| Serviço | Tipo | Acesso |
+|---------|------|--------|
+| Grafana | ECS Fargate (imagem customizada) | Público via `/grafana` (login obrigatório) |
+| Amazon AMP | Serviço gerenciado AWS | Interno via SigV4 |
 
-### Imagens customizadas
+### Imagem customizada do Grafana
 
-Prometheus e Alertmanager usam imagens customizadas com AWS CLI instalado. No startup, um entrypoint baixa os arquivos de configuração do S3 antes de iniciar o serviço:
+O Grafana usa uma imagem customizada baseada em `grafana/grafana:latest` com AWS CLI instalado via `apk`. No startup, o entrypoint baixa todos os arquivos de configuração do S3 antes de iniciar o serviço:
 
-```bash
-# entrypoint.sh (Prometheus)
-aws s3 cp s3://${CONFIGS_BUCKET}/observability/prometheus.yml /etc/prometheus/prometheus.yml
-aws s3 cp s3://${CONFIGS_BUCKET}/observability/alerts.yml /etc/prometheus/alerts.yml
-exec /bin/prometheus \
-  --config.file=/etc/prometheus/prometheus.yml \
-  --web.enable-lifecycle \
-  --storage.tsdb.path=/prometheus \
-  --web.external-url=http://localhost/prometheus \
-  --web.route-prefix=/prometheus
+```dockerfile
+FROM grafana/grafana:latest
+
+USER root
+
+RUN apk add --no-cache aws-cli
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 ```
 
-Os arquivos de configuração ficam armazenados no S3 (`<S3_BUCKET>/observability/`).
+```bash
+# entrypoint.sh
+#!/bin/sh
+set -e
 
-### Service Discovery (Cloud Map)
+echo "Baixando configs do S3..."
+aws s3 cp s3://${CONFIGS_BUCKET}/observability/grafana/datasources.yml \
+    /etc/grafana/provisioning/datasources/datasources.yml
+aws s3 cp s3://${CONFIGS_BUCKET}/observability/grafana/dashboards.yml \
+    /etc/grafana/provisioning/dashboards/dashboards.yml
+aws s3 sync s3://${CONFIGS_BUCKET}/observability/grafana/dashboards/ \
+    /var/lib/grafana/dashboards/
+aws s3 cp s3://${CONFIGS_BUCKET}/observability/grafana/alerting/rules.yml \
+    /etc/grafana/provisioning/alerting/rules.yml
+aws s3 cp s3://${CONFIGS_BUCKET}/observability/grafana/alerting/notification-policies.yml \
+    /etc/grafana/provisioning/alerting/notification-policies.yml
+aws s3 cp s3://${CONFIGS_BUCKET}/observability/grafana/alerting/contact-points.yml \
+    /etc/grafana/provisioning/alerting/contact-points.yml
 
-No ECS Fargate os IPs das tasks são dinâmicos e mudam a cada deploy. O AWS Cloud Map registra o IP atual de cada task em um DNS privado dentro da VPC (namespace `.local`):
+echo "Iniciando Grafana..."
+exec /run.sh "$@"
+```
 
-| DNS | Serviço |
-|-----|---------|
-| `backend.local` | Backend Express |
-| `prometheus.local` | Prometheus |
-| `alertmanager.local` | Alertmanager |
+### Estrutura de arquivos no S3
+
+```
+<CONFIGS_BUCKET>/observability/grafana/
+├── datasources.yml
+├── dashboards.yml
+├── dashboards/
+│   └── dashboard.json
+└── alerting/
+    ├── rules.yml
+    ├── notification-policies.yml
+    └── contact-points.yml
+```
 
 ### Alertas configurados
 
@@ -142,7 +167,7 @@ No ECS Fargate os IPs das tasks são dinâmicos e mudam a cada deploy. O AWS Clo
 | `HighErrorRate` | Taxa de erros 5xx > 5% por 1 minuto | warning |
 | `HighMemoryUsage` | RAM > 150MB por 2 minutos | warning |
 
-As notificações são enviadas para o Slack com estado de firing e resolved.
+As notificações são enviadas para o Slack (`#treinamento-devops-pub`) com estado de firing e resolved. O `repeat_interval` está configurado para 10 minutos para evitar spam.
 
 ### IAM Roles
 
@@ -150,20 +175,8 @@ No ECS existem duas roles distintas:
 
 | Role | Usada por | Permissões |
 |------|-----------|------------|
-| `execution role` | ECS (gerencia a task) | ECR pull, CloudWatch logs, Cloud Map register |
-| `task role` (observability) | Container em runtime | S3 read (configs) |
-
-### Atualizar configurações do Prometheus ou Alertmanager
-
-```bash
-# Edita o arquivo localmente e faz upload para o S3
-aws s3 cp observability/prometheus/prometheus.yml s3://<S3_BUCKET>/observability/prometheus.yml
-aws s3 cp observability/alertmanager/alertmanager.yml s3://<S3_BUCKET>/observability/alertmanager.yml
-
-# Força novo deploy para a task baixar as configs atualizadas
-aws ecs update-service --cluster desafio4-cluster --service desafio4-prometheus-service --force-new-deployment --region us-east-2
-aws ecs update-service --cluster desafio4-cluster --service desafio4-alertmanager-service --force-new-deployment --region us-east-2
-```
+| `execution role` | ECS (gerencia a task) | ECR pull, CloudWatch Logs, Cloud Map register |
+| `task role` (observability) | Container em runtime | S3 read (configs), AMP write/query (SigV4) |
 
 ## Variáveis de ambiente
 
@@ -188,16 +201,14 @@ DB_HOST, DB_USER, DB_PASS, DB_NAME, PORT
 ### Grafana
 
 ```
-GF_SECURITY_ADMIN_PASSWORD  # definida no terraform.tfvars (não commitado)
-GF_SERVER_ROOT_URL          # https://<SEU_SUBDOMINIO>/grafana
-GF_SERVER_SERVE_FROM_SUB_PATH # true
-```
-
-### Prometheus e Alertmanager
-
-```
-CONFIGS_BUCKET      # nome do bucket S3 com os arquivos de config
-AWS_DEFAULT_REGION  # us-east-2
+GF_SECURITY_ADMIN_PASSWORD      # definida no terraform.tfvars (não commitado)
+GF_SERVER_ROOT_URL              # https://<SEU_SUBDOMINIO>/grafana
+GF_SERVER_SERVE_FROM_SUB_PATH   # true
+GF_AUTH_SIGV4_AUTH_ENABLED      # true (necessário para autenticar com AMP)
+CONFIGS_BUCKET                  # nome do bucket S3 com os arquivos de config
+AWS_DEFAULT_REGION              # us-east-2
+AWS_REGION                      # us-east-2
+AWS_SDK_LOAD_CONFIG             # true
 ```
 
 ## Deploy
@@ -225,36 +236,38 @@ aws ecr get-login-password --region <AWS_REGION> | \
 
 # Backend
 docker build -t backend ./backend
-docker tag backend:latest <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/backend:latest
-docker push <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/backend:latest
+docker tag backend:latest <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-backend:latest
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-backend:latest
 
 # Frontend (build estático)
 cd frontend
 npm run build
 aws s3 sync ./out s3://<S3_BUCKET>/frontend --delete --region <AWS_REGION>
 
-# Prometheus (imagem customizada)
-docker build -t prometheus-build observability/prometheus/
-docker tag prometheus-build <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-prometheus:latest
-docker push <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-prometheus:latest
-
-# Alertmanager (imagem customizada)
-docker build -t alertmanager-build observability/alertmanager/
-docker tag alertmanager-build <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-alertmanager:latest
-docker push <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-alertmanager:latest
-
-# Grafana (imagem pública, só tag e push)
-docker pull grafana/grafana:latest
-docker tag grafana/grafana:latest <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-grafana:latest
+# Grafana (imagem customizada)
+docker build --no-cache -t grafana-build observability/grafana/
+docker tag grafana-build:latest <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-grafana:latest
 docker push <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<PROJECT_NAME>-grafana:latest
 ```
 
 ### Upload das configs para o S3
 
 ```bash
-aws s3 cp observability/prometheus/prometheus.yml s3://<S3_BUCKET>/observability/prometheus.yml
-aws s3 cp observability/prometheus/alerts.yml s3://<S3_BUCKET>/observability/alerts.yml
-aws s3 cp observability/alertmanager/alertmanager.yml s3://<S3_BUCKET>/observability/alertmanager.yml
+# Datasource e dashboards
+aws s3 cp observability/grafana/datasources.yml \
+    s3://<CONFIGS_BUCKET>/observability/grafana/datasources.yml
+aws s3 cp observability/grafana/dashboards.yml \
+    s3://<CONFIGS_BUCKET>/observability/grafana/dashboards.yml
+aws s3 sync observability/grafana/dashboards/ \
+    s3://<CONFIGS_BUCKET>/observability/grafana/dashboards/
+
+# Alerting
+aws s3 cp observability/grafana/alerting/rules.yml \
+    s3://<CONFIGS_BUCKET>/observability/grafana/alerting/rules.yml
+aws s3 cp observability/grafana/alerting/notification-policies.yml \
+    s3://<CONFIGS_BUCKET>/observability/grafana/alerting/notification-policies.yml
+aws s3 cp observability/grafana/alerting/contact-points.yml \
+    s3://<CONFIGS_BUCKET>/observability/grafana/alerting/contact-points.yml
 ```
 
 ### Invalidar cache do CloudFront após atualizar o frontend
@@ -262,7 +275,7 @@ aws s3 cp observability/alertmanager/alertmanager.yml s3://<S3_BUCKET>/observabi
 ```bash
 aws cloudfront create-invalidation \
   --distribution-id $(aws cloudfront list-distributions \
-    --query "DistributionList.Items[?Aliases.Items[?contains(@, 'mpdesafio4')]].Id" \
+    --query "DistributionList.Items[?Aliases.Items[?contains(@, '<SEU_SUBDOMINIO>')]].Id" \
     --output text) \
   --paths "/*"
 ```
@@ -271,31 +284,41 @@ aws cloudfront create-invalidation \
 
 ```bash
 # Backend
-aws ecs update-service --cluster desafio4-cluster --service desafio4-backend-service --force-new-deployment --region us-east-2
-
-# Prometheus
-aws ecs update-service --cluster desafio4-cluster --service desafio4-prometheus-service --force-new-deployment --region us-east-2
+aws ecs update-service --cluster <PROJECT_NAME>-cluster \
+  --service <PROJECT_NAME>-backend-service --force-new-deployment --region us-east-2
 
 # Grafana
-aws ecs update-service --cluster desafio4-cluster --service desafio4-grafana-service --force-new-deployment --region us-east-2
+aws ecs update-service --cluster <PROJECT_NAME>-cluster \
+  --service <PROJECT_NAME>-grafana-service --force-new-deployment --region us-east-2
+```
 
-# Alertmanager
-aws ecs update-service --cluster desafio4-cluster --service desafio4-alertmanager-service --force-new-deployment --region us-east-2
+### Pausar e retomar serviços
+
+```bash
+# Pausar (ex: para manutenção ou parar alertas durante debug)
+aws ecs update-service --cluster <PROJECT_NAME>-cluster \
+  --service <PROJECT_NAME>-grafana-service --desired-count 0 --region us-east-2
+
+# Retomar
+aws ecs update-service --cluster <PROJECT_NAME>-cluster \
+  --service <PROJECT_NAME>-grafana-service --desired-count 1 --region us-east-2
 ```
 
 ### Simular falha de serviço
 
 ```bash
 # Derrubar o backend
-aws ecs update-service --cluster desafio4-cluster --service desafio4-backend-service --desired-count 0 --region us-east-2
+aws ecs update-service --cluster <PROJECT_NAME>-cluster \
+  --service <PROJECT_NAME>-backend-service --desired-count 0 --region us-east-2
 
 # Subir o backend
-aws ecs update-service --cluster desafio4-cluster --service desafio4-backend-service --desired-count 1 --region us-east-2
+aws ecs update-service --cluster <PROJECT_NAME>-cluster \
+  --service <PROJECT_NAME>-backend-service --desired-count 1 --region us-east-2
 ```
 
 ## Desenvolvimento local
 
-O projeto inclui um `docker-compose.yaml` com nginx, frontend, backend, PostgreSQL, Prometheus, Grafana e Alertmanager local.
+O projeto inclui um `docker-compose.yaml` com nginx, frontend, backend, PostgreSQL, Prometheus e Grafana local.
 
 ```bash
 docker-compose up --build
@@ -327,6 +350,12 @@ NEXT_PUBLIC_API_URL=http://localhost
 
 ## Decisões técnicas
 
+**Por que Amazon Managed Prometheus (AMP) em vez de Prometheus self-hosted?**
+O AMP elimina a necessidade de gerenciar containers de Prometheus e Alertmanager no ECS. O serviço é gerenciado pela AWS, com alta disponibilidade e retenção de dados persistente — sem perda de métricas a cada redeploy.
+
+**Por que Grafana Alerting em vez de Alertmanager separado?**
+Com AMP, o Alertmanager self-hosted perde o principal motivo de existir (receber alertas do Prometheus). O Grafana Alerting cobre o mesmo caso de uso com menos infraestrutura: sem container extra, sem imagem customizada, sem deploy adicional.
+
 **Por que CloudFront em vez de ALB direto para o frontend?**
 S3 + CloudFront é mais barato e escalável para assets estáticos do que manter um container ECS rodando 24/7 para servir HTML/JS/CSS.
 
@@ -339,14 +368,11 @@ O certificado do ALB é emitido para `<SEU_SUBDOMINIO>`, mas o CloudFront conect
 **Por que remote state no S3?**
 Permite que múltiplos membros da equipe compartilhem o estado do Terraform sem conflitos, com lock via arquivo no próprio S3.
 
-**Por que Prometheus e Alertmanager não são expostos publicamente?**
-Expor ferramentas de observabilidade publicamente representa um risco de segurança — qualquer pessoa poderia ver métricas internas, regras de alerta e status da infraestrutura. Apenas o Grafana é exposto, com autenticação obrigatória, e serve como ponto único de acesso para visualização.
+**Por que as configs do Grafana ficam no S3?**
+No ECS Fargate não é possível montar arquivos locais como no Docker Compose. O S3 é a solução padrão para armazenar configs que precisam ser acessadas pelas tasks no startup, permitindo atualizar datasources, dashboards e alerting sem rebuildar a imagem.
 
-**Por que as configs do Prometheus e Alertmanager ficam no S3?**
-No ECS Fargate não é possível montar arquivos locais como no Docker Compose. O S3 é a solução padrão para armazenar configs que precisam ser acessadas pelas tasks no startup, permitindo atualizar as configurações sem precisar rebuildar as imagens.
-
-**Por que o Prometheus faz scrape via ALB e não via Cloud Map?**
-O `dns_sd_configs` remove o target completamente quando não há instâncias registradas no Cloud Map (ex: quando o backend está com `desired-count 0`). Sem target, a métrica `up` some e o alerta `ServiceDown` nunca dispara. Com `static_configs` apontando para o ALB, o target sempre existe e o Prometheus registra `up=0` corretamente quando o backend cai.
+**Por que a imagem do Grafana é customizada?**
+A imagem oficial não inclui AWS CLI. A customização instala o AWS CLI via `apk add aws-cli` (compatível com Alpine/musl) e adiciona o entrypoint que sincroniza as configs do S3 antes de iniciar o Grafana.
 
 ## URLs
 
@@ -355,4 +381,3 @@ O `dns_sd_configs` remove o target completamente quando não há instâncias reg
 | Produção | https://<SEU_SUBDOMINIO> |
 | Health check | https://<SEU_SUBDOMINIO>/api/health |
 | Grafana | https://<SEU_SUBDOMINIO>/grafana |
-
