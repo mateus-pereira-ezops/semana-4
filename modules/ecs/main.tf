@@ -543,11 +543,13 @@ resource "aws_ecs_task_definition" "alertmanager" {
 # }
 
 resource "aws_ecs_service" "backend" {
-  name            = "${var.project_name}-backend-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+  name                               = "${var.project_name}-backend-service"
+  cluster                            = aws_ecs_cluster.main.id
+  task_definition                    = aws_ecs_task_definition.backend.arn
+  desired_count                      = 2
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  launch_type                        = "FARGATE"
 
   network_configuration {
     subnets          = var.private_subnet_ids
