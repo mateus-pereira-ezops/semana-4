@@ -41,7 +41,6 @@ resource "aws_acm_certificate_validation" "cloudfront" {
   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 }
 
-# Referencia o bucket existente sem gerenciá-lo
 data "aws_s3_bucket" "frontend" {
   bucket = "mateus-pereira-lambda-artifacts"
 }
