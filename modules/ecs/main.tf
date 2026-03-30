@@ -145,11 +145,11 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
-    type = "fixed-response"
-    fixed_response {
-      content_type = "text/plain"
-      message_body = "Not found"
-      status_code  = "404"
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
     }
   }
 }
@@ -192,24 +192,8 @@ resource "aws_lb_target_group" "grafana" {
   target_type = "ip"
 
   health_check {
-    path = "/grafana/api/health"
+    path = "/api/health"
     port = "3000"
-  }
-}
-
-resource "aws_lb_listener_rule" "backend_http" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 100
-
-  condition {
-    path_pattern {
-      values = ["/api", "/api/*"]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.backend.arn
   }
 }
 
@@ -220,22 +204,6 @@ resource "aws_lb_listener_rule" "backend_https" {
   condition {
     path_pattern {
       values = ["/api", "/api/*"]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.backend.arn
-  }
-}
-
-resource "aws_lb_listener_rule" "metrics_http" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 99
-
-  condition {
-    path_pattern {
-      values = ["/metrics"]
     }
   }
 
@@ -258,20 +226,6 @@ resource "aws_lb_listener_rule" "metrics_https" {
   action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.backend.arn
-  }
-}
-
-resource "aws_lb_listener_rule" "grafana_http" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 102
-  condition {
-    path_pattern {
-      values = ["/grafana", "/grafana/*"]
-    }
-  }
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.grafana.arn
   }
 }
 
@@ -465,7 +419,7 @@ resource "aws_ecs_task_definition" "grafana" {
     portMappings = [{ containerPort = 3000, protocol = "tcp" }]
     environment = [
       { name = "GF_SECURITY_ADMIN_PASSWORD", value = var.grafana_admin_password },
-      { name = "GF_SERVER_ROOT_URL", value = "https://${var.subdomain}/grafana" },
+      { name = "GF_SERVER_ROOT_URL", value = "https://${var.subdomain}/grafana/" },
       { name = "GF_SERVER_SERVE_FROM_SUB_PATH", value = "true" },
       { name = "GF_AUTH_SIGV4_AUTH_ENABLED", value = "true" },
       { name = "CONFIGS_BUCKET", value = var.configs_bucket },
