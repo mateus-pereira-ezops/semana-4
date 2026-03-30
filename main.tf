@@ -21,7 +21,7 @@ module "ecr" {
     "backend",
     "${var.project_name}-prometheus",
     "${var.project_name}-grafana",
-  "${var.project_name}-alertmanager"]
+  ]
 }
 
 module "ecs" {
@@ -33,11 +33,10 @@ module "ecs" {
   public_subnet_ids  = module.vpc.public_subnet_ids
   private_subnet_ids = module.vpc.private_subnet_ids
 
-  frontend_image     = "${module.ecr.repository_urls["frontend"]}:latest"
-  backend_image      = "${module.ecr.repository_urls["backend"]}:latest"
-  prometheus_image   = "${module.ecr.repository_urls["${var.project_name}-prometheus"]}:latest"
-  grafana_image      = "${module.ecr.repository_urls["${var.project_name}-grafana"]}:latest"
-  alertmanager_image = "${module.ecr.repository_urls["${var.project_name}-alertmanager"]}:latest"
+  frontend_image   = "${module.ecr.repository_urls["frontend"]}:latest"
+  backend_image    = "${module.ecr.repository_urls["backend"]}:latest"
+  prometheus_image = "${module.ecr.repository_urls["${var.project_name}-prometheus"]}:latest"
+  grafana_image    = "${module.ecr.repository_urls["${var.project_name}-grafana"]}:latest"
 
   grafana_admin_password = var.grafana_admin_password
   db_endpoint            = module.rds.db_endpoint
