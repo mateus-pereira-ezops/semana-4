@@ -26,15 +26,11 @@ variable "backend_image" {
   type = string
 }
 
-variable "prometheus_image" {
-  type = string
-}
-
 variable "grafana_image" {
   type = string
 }
 
-variable "alertmanager_image" {
+variable "prometheus_image" {
   type = string
 }
 
